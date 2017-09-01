@@ -1,0 +1,140 @@
+From d56439766988cf5f3663e900a1707b5a71f10fb9 Mon Sep 17 00:00:00 2001
+From: iSaaChjK <j-isaac10@Hotmail.com>
+Date: Fri, 25 Nov 2016 17:01:28 -0600
+Subject: [PATCH] rrt
+
+---
+ src/char_sql/char.c | 32 ++++++++++++++++++++++++++++++--
+ src/common/mmo.h    |  7 +++++++
+ src/map/pc.c        | 15 +++++++++++++++
+ 3 files changed, 52 insertions(+), 2 deletions(-)
+
+diff --git a/src/char_sql/char.c b/src/char_sql/char.c
+index 3bf7ea3..a5ba9e4 100644
+--- a/src/char_sql/char.c
++++ b/src/char_sql/char.c
+@@ -425,7 +425,7 @@ int mmo_char_tosql(int char_id, struct mmo_charstatus* p)
+ 	int i = 0;
+ 	int count = 0;
+ 	int diff = 0;
+-	char save_status[128]; //For displaying save information. [Skotlex]
++	char save_status[150]; //For displaying save information. [Skotlex]
+ 	struct mmo_charstatus *cp;
+ 	int errors = 0; //If there are any errors while saving, "cp" will not be updated at the end.
+ 	StringBuf buf;
+@@ -566,6 +566,17 @@ int mmo_char_tosql(int char_id, struct mmo_charstatus* p)
+ 			strcat(save_status, " status2");
+ 	}
+ 
++	/* SQL Oboro PVP */
++	if( memcmp(&p->oboropvp, &cp->oboropvp, sizeof(struct oboro_pvp)) )
++	{
++		if( SQL_ERROR == Sql_Query(sql_handle, "REPLACE INTO `oboro_pvp` (`char_id`, `kill`, `dead`) VALUES ('%d', '%d', '%d')", p->char_id, p->oboropvp.kill, p->oboropvp.dead) )
++		{
++			Sql_ShowDebug(sql_handle);
++			errors++;
++		} else
++			strcat(save_status, " oboropvprank");
++	}
++
+ 	/* Player PVP Event Ranking */
+ 	if( memcmp(&p->pvp, &cp->pvp, sizeof(struct s_killrank)) )
+ 	{
+@@ -1167,7 +1178,7 @@ static void char_ip_premium(uint32 ip, struct mmo_charstatus* p)
+ int mmo_char_fromsql(int char_id, struct mmo_charstatus* p, bool load_everything)
+ {
+ 	int i,j;
+-	char t_msg[128] = "";
++	char t_msg[150] = "";
+ 	struct mmo_charstatus* cp;
+ 	StringBuf buf;
+ 	SqlStmt* stmt;
+@@ -1424,6 +1435,19 @@ int mmo_char_fromsql(int char_id, struct mmo_charstatus* p, bool load_everything
+ 	strcat(t_msg, " hotkeys");
+ #endif
+ 
++	/* Character Oboro PVP Ranking */
++	if( SQL_ERROR == SqlStmt_Prepare(stmt, "SELECT `kill`, `dead` FROM `oboro_pvp` WHERE `char_id` = ?")
++		|| SQL_ERROR == SqlStmt_BindParam(stmt, 0, SQLDT_INT, &char_id, 0)
++		|| SQL_ERROR == SqlStmt_Execute(stmt)
++		|| SQL_ERROR == SqlStmt_BindColumn(stmt, 0, SQLDT_INT, &p->oboropvp.kill, 0, NULL, NULL)
++		|| SQL_ERROR == SqlStmt_BindColumn(stmt, 1, SQLDT_INT, &p->oboropvp.dead, 0, NULL, NULL)
++		|| SQL_SUCCESS != SqlStmt_NextRow(stmt) )
++	{
++		p->oboropvp.dead = 0;
++		p->oboropvp.kill = 0;
++	}
++	strcat(t_msg, " oboropvp");
++
+ 	/* Character PVP Ranking */
+ 	if( SQL_ERROR == SqlStmt_Prepare(stmt, "SELECT `kill_count`, `death_count`, `score` FROM `char_pvp` WHERE `char_id` = ?")
+ 		|| SQL_ERROR == SqlStmt_BindParam(stmt, 0, SQLDT_INT, &char_id, 0)
+@@ -2100,6 +2124,8 @@ int delete_char_sql(int char_id)
+ 	mercenary_owner_delete(char_id);
+ 
+ 	/* Char Ranking */
++	if( SQL_ERROR == Sql_Query(sql_handle, "DELETE FROM `oboro_pvp` WHERE `char_id` = '%d'", char_id) )
++		Sql_ShowDebug(sql_handle);
+ 	if( SQL_ERROR == Sql_Query(sql_handle, "DELETE FROM `char_pvp` WHERE `char_id` = '%d'", char_id) )
+ 		Sql_ShowDebug(sql_handle);
+ 	if( SQL_ERROR == Sql_Query(sql_handle, "DELETE FROM `char_pk` WHERE `char_id` = '%d'", char_id) )
+@@ -3130,6 +3156,8 @@ int char_ranking_reset(int type)
+ 	case 2:
+ 		if( SQL_ERROR == Sql_Query(sql_handle, "TRUNCATE TABLE `char_pvp`") )
+ 			Sql_ShowDebug(sql_handle);
++		if( SQL_ERROR == Sql_Query(sql_handle, "TRUNCATE TABLE `oboro_pvp`") )
++			Sql_ShowDebug(sql_handle);
+ 		break;
+ 	}
+ 
+diff --git a/src/common/mmo.h b/src/common/mmo.h
+index dadcfdc..5effde9 100644
+--- a/src/common/mmo.h
++++ b/src/common/mmo.h
+@@ -337,6 +337,12 @@ struct hotkey {
+ };
+ #endif
+ 
++struct oboro_pvp {
++	unsigned int 
++		kill,
++		dead;
++};
++
+ struct s_killrank {
+ 	unsigned short
+ 		kill_count,
+@@ -535,6 +541,7 @@ struct mmo_charstatus {
+ 
+ 	//isaac
+ 	char mac_address[30];
++	struct oboro_pvp oboropvp;
+ 
+ 	time_t delete_date;
+ };
+diff --git a/src/map/pc.c b/src/map/pc.c
+index 6f4cc2d..1a3a0c6 100644
+--- a/src/map/pc.c
++++ b/src/map/pc.c
+@@ -7496,6 +7496,21 @@ int pc_dead(struct map_session_data *sd,struct block_list *src,int skill)
+ 	pc_setparam(sd, SP_KILLERRID, src?src->id:0);
+ 	npc_script_event(sd,NPCE_DIE);
+ 
++	// [iSaaChjK]
++	// nuevo sistema de PVP para Ranking Oboro
++	if (sd && ssd && map[sd->bl.m].flag.pvp)
++	{
++		if ( sd->status.account_id != ssd->status.account_id )
++		{
++			if ( sd->status.base_level == 99 )
++			{
++				// SQL Ranking
++				sd->status.oboropvp.dead++;
++				ssd->status.oboropvp.kill++;
++			}
++		}
++	}
++
+ 	if( sd->bg_id )
+ 	{
+ 		struct battleground_data *bg;
